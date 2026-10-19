@@ -1,0 +1,8 @@
+.git
+node_modules
+apps/pwa/node_modules
+apps/pwa/dist
+apps/pwa/test-results
+apps/pwa/playwright-report
+**/.env*
+*.local

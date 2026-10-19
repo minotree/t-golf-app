@@ -3,6 +3,7 @@ import type { MotionSample } from './motionMetrics';
 
 export interface PoseInspection {
   durationSeconds: number;
+  durationEstimated: boolean;
   sampledFrames: number;
   detectedFrames: number;
   usableFrames: number;
@@ -31,7 +32,7 @@ function waitForVideo(video: HTMLVideoElement, event: 'loadedmetadata' | 'seeked
 }
 
 /** 기술 검증용 5fps 샘플링. 스윙 타이밍이나 임팩트 측정용이 아니다. */
-export async function inspectPose(url: string, signal: AbortSignal, progress: (message: string) => void): Promise<PoseInspection> {
+export async function inspectPose(url: string, signal: AbortSignal, progress: (message: string) => void, recordedDuration?: number): Promise<PoseInspection> {
   const started = performance.now();
   const video = document.createElement('video');
   video.muted = true;
@@ -41,7 +42,11 @@ export async function inspectPose(url: string, signal: AbortSignal, progress: (m
   try {
     progress('촬영 영상 확인 중…');
     await waitForVideo(video, 'loadedmetadata', signal, () => { video.src = url; video.load(); });
-    if (!Number.isFinite(video.duration) || video.duration <= 0 || video.duration > 31) throw new Error('영상 길이를 확인하지 못했습니다. 30초 이내로 다시 촬영해 주세요.');
+    // MediaRecorder의 WebM은 유한한 duration 메타데이터가 없을 수 있다.
+    // 앱이 직접 기록한 촬영 시계만 대안으로 허용하고 임의 길이는 만들지 않는다.
+    const durationEstimated = !Number.isFinite(video.duration) || video.duration <= 0;
+    const duration = durationEstimated ? recordedDuration : video.duration;
+    if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || duration > 31) throw new Error('영상 길이를 확인하지 못했습니다. 30초 이내로 다시 촬영해 주세요.');
     progress('자세 모델 다운로드 중… 처음 실행 시 시간이 걸릴 수 있습니다.');
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
       throw new Error('이 브라우저는 백그라운드 자세 분석을 지원하지 않습니다. Safari 최신 버전에서 확인해 주세요.');
@@ -50,13 +55,13 @@ export async function inspectPose(url: string, signal: AbortSignal, progress: (m
     worker = new Worker(new URL('./poseWorker.ts', import.meta.url), { type: 'module' });
     await requestPose(worker, { type: 'init' }, signal);
     signal.throwIfAborted();
-    const sampledFrames = Math.ceil(video.duration * 5);
+    const sampledFrames = Math.ceil(duration * 5);
     let detectedFrames = 0;
     let usableFrames = 0;
     const samples: MotionSample[] = [];
     for (let index = 0; index < sampledFrames; index++) {
       signal.throwIfAborted();
-      const time = Math.min(index / 5 + 0.001, video.duration - 0.001);
+      const time = Math.max(0, Math.min(index / 5 + 0.001, duration - 0.001));
       await waitForVideo(video, 'seeked', signal, () => { video.currentTime = time; });
       const bitmap = await createImageBitmap(video);
       const result = await requestPose(worker, { type: 'frame', bitmap, timestamp: time * 1000 }, signal);
@@ -69,7 +74,7 @@ export async function inspectPose(url: string, signal: AbortSignal, progress: (m
       await new Promise(resolve => window.setTimeout(resolve, 0));
     }
     signal.throwIfAborted();
-    return { durationSeconds: video.duration, sampledFrames, detectedFrames, usableFrames, elapsedMs: performance.now() - started, samples };
+    return { durationSeconds: duration, durationEstimated, sampledFrames, detectedFrames, usableFrames, elapsedMs: performance.now() - started, samples };
   } finally {
     worker?.terminate();
     video.removeAttribute('src');

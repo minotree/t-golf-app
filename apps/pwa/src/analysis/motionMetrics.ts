@@ -1,8 +1,10 @@
 export interface PosePoint { x: number; y: number; visibility: number }
+export interface PosePoint3D extends PosePoint { z: number }
 export interface FrameMotion {
   head: { x: number; y: number } | null;
   torsoLength: number | null;
   torsoAngleDegrees: number | null;
+  shoulderYawDegrees?: number | null;
 }
 export type Metric = { status: 'available'; value: number; validFrames: number }
   | { status: 'unavailable'; reason: string; validFrames: number };
@@ -10,6 +12,7 @@ export interface MotionSummary {
   version: 'motion-2d-v1';
   headDisplacementTorsoRatio: Metric;
   torsoAngleChangeDegrees: Metric;
+  shoulderAxisChangeDegrees: Metric;
 }
 export interface MotionSample { timeSeconds: number; motion: FrameMotion }
 export type WindowSummary = { status: 'available'; motion: MotionSummary; sampledFrames: number; baselineSeconds: number }
@@ -26,9 +29,15 @@ export function summarizeWindow(samples: readonly MotionSample[], start: number,
 }
 
 /** 폭으로 정규화한 영상 평면 좌표. y에도 높이/폭을 적용해 종횡비 왜곡을 피한다. */
-export function extractFrameMotion(pose: readonly PosePoint[], width: number, height: number): FrameMotion {
-  const empty: FrameMotion = { head: null, torsoLength: null, torsoAngleDegrees: null };
+export function extractFrameMotion(pose: readonly PosePoint[], width: number, height: number, world: readonly PosePoint3D[] = []): FrameMotion {
+  const empty: FrameMotion = { head: null, torsoLength: null, torsoAngleDegrees: null, shoulderYawDegrees: null };
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return empty;
+  const left = world[11], right = world[12];
+  if (left && right && [left, right].every(p => [p.x, p.y, p.z, p.visibility].every(Number.isFinite) && p.visibility >= 0.6)
+    && [pose[11], pose[12]].every(p => p && p.visibility >= 0.6 && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)) {
+    const dx = right.x - left.x, dz = right.z - left.z;
+    if (Math.hypot(dx, dz) >= 0.02) empty.shoulderYawDegrees = Math.atan2(dz, dx) * 180 / Math.PI;
+  }
   const point = (index: number) => {
     const p = pose[index];
     if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.visibility)
@@ -43,7 +52,7 @@ export function extractFrameMotion(pose: readonly PosePoint[], width: number, he
   const torsoLength = Math.hypot(dx, dy);
   // 극소 몸통이나 뒤집힌 검출은 기준 스케일로 사용하지 않는다. 임시 품질 기준이다.
   if (torsoLength < 0.02 || dy >= 0) return { ...empty, head };
-  return { head, torsoLength, torsoAngleDegrees: Math.atan2(dx, -dy) * 180 / Math.PI };
+  return { ...empty, head, torsoLength, torsoAngleDegrees: Math.atan2(dx, -dy) * 180 / Math.PI };
 }
 
 /** 전체 촬영 구간의 최대 변화. 어드레스·탑·임팩트 구간 감지는 포함하지 않는다. */
@@ -52,6 +61,7 @@ export function summarizeMotion(frames: readonly FrameMotion[]): MotionSummary {
   const minimum = Math.max(3, Math.ceil(frames.length * 0.7));
   const heads = frames.filter(frame => frame.head !== null);
   const angles = frames.flatMap(frame => frame.torsoAngleDegrees === null ? [] : [frame.torsoAngleDegrees]);
+  const shoulderAngles = frames.flatMap(frame => frame.shoulderYawDegrees == null ? [] : [frame.shoulderYawDegrees]);
   const unavailable = (validFrames: number, reason: string): Metric => ({ status: 'unavailable', validFrames, reason });
   let head: Metric = unavailable(heads.length, '첫 프레임의 코·몸통 기준을 확인하지 못했습니다. 준비 자세에서 촬영해 주세요.');
   let torso: Metric = unavailable(angles.length, '첫 프레임의 몸통 기준을 확인하지 못했습니다.');
@@ -69,5 +79,9 @@ export function summarizeMotion(frames: readonly FrameMotion[]): MotionSummary {
       status: 'available', validFrames: angles.length, value: Math.max(...angles.map(angle => Math.abs(angle - initial))),
     };
   }
-  return { version: 'motion-2d-v1', headDisplacementTorsoRatio: head, torsoAngleChangeDegrees: torso };
+  const initialShoulder = baseline?.shoulderYawDegrees;
+  const shoulder: Metric = initialShoulder == null || shoulderAngles.length < minimum
+    ? unavailable(shoulderAngles.length, '어깨 깊이·가시성 기준이 부족해 추정하지 않았습니다.')
+    : { status: 'available', validFrames: shoulderAngles.length, value: Math.max(...shoulderAngles.map(angle => Math.abs(((angle - initialShoulder + 540) % 360) - 180))) };
+  return { version: 'motion-2d-v1', headDisplacementTorsoRatio: head, torsoAngleChangeDegrees: torso, shoulderAxisChangeDegrees: shoulder };
 }

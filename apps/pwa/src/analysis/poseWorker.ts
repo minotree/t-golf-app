@@ -30,8 +30,9 @@ self.onmessage = async (event: MessageEvent<PoseRequest>) => {
       self.postMessage({ type: 'ready' } satisfies PoseReply);
     } else {
       if (!landmarker) throw new Error('자세 모델이 준비되지 않았습니다.');
-      const pose = landmarker.detectForVideo(request.bitmap, request.timestamp).landmarks[0];
-      const motion = extractFrameMotion(pose ?? [], request.bitmap.width, request.bitmap.height);
+      const result = landmarker.detectForVideo(request.bitmap, request.timestamp);
+      const pose = result.landmarks[0];
+      const motion = extractFrameMotion(pose ?? [], request.bitmap.width, request.bitmap.height, result.worldLandmarks[0] ?? []);
       self.postMessage({ type: 'frame', detected: !!pose, usable: !!pose && hasVisibleJoints(pose), motion } satisfies PoseReply);
     }
   } catch {

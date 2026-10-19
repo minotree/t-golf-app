@@ -63,3 +63,17 @@ test('비정상 입력과 퇴화 몸통에서 각도·스케일 생성하지 않
   points[0].x = NaN;
   assert.equal(extractFrameMotion(points, 100, 100).head, null);
 });
+test('추정 어깨축 회전과 각도 경계 연속성', () => {
+  const frames = [179, -179, 178].map(shoulderYawDegrees => ({ ...extractFrameMotion(pose(), 100, 100), shoulderYawDegrees }));
+  assert.equal(summarizeMotion(frames).shoulderAxisChangeDegrees.value, 2);
+});
+test('어깨 world 좌표 90도 방향 변화, world 누락 시 측정 불가', () => {
+  const world = pose().map(p => ({ ...p, z: 0 }));
+  world[11].x = -0.2; world[12].x = 0.2;
+  const first = extractFrameMotion(pose(), 100, 100, world);
+  world[11].x = world[12].x = 0; world[11].z = -0.2; world[12].z = 0.2;
+  const rotated = extractFrameMotion(pose(), 100, 100, world);
+  assert.equal(summarizeMotion([first, rotated, first]).shoulderAxisChangeDegrees.value, 90);
+  const missing = extractFrameMotion(pose(), 100, 100);
+  assert.equal(summarizeMotion([missing, rotated, first]).shoulderAxisChangeDegrees.status, 'unavailable');
+});
